@@ -2,60 +2,91 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { Pool } = require('pg');
 const { DatabaseSync } = require('node:sqlite');
 
-const dbPath = path.join(__dirname, '../data/queue_flow.db');
-const dbDir = path.dirname(dbPath);
-if (!fs.existsSync(dbDir)) {
-  fs.mkdirSync(dbDir, { recursive: true });
+const isPostgres = !!process.env.DATABASE_URL;
+let pool = null;
+let sqliteDb = null;
+
+if (isPostgres) {
+  pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: process.env.DATABASE_URL.includes('localhost') ? false : { rejectUnauthorized: false }
+  });
+  console.log('⚡ Connected to PostgreSQL Database');
+} else {
+  const dbPath = path.join(__dirname, '../data/queue_flow.db');
+  const dbDir = path.dirname(dbPath);
+  if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
+  sqliteDb = new DatabaseSync(dbPath);
+  console.log('⚡ Connected to SQLite Database');
 }
 
-const sqliteDb = new DatabaseSync(dbPath);
+// Database helper
+function dbAll(sql, params = []) {
+  if (isPostgres) {
+    let i = 1;
+    const pgSql = sql.replace(/\?/g, () => `$${i++}`);
+    return pool.query(pgSql, params).then(res => res.rows);
+  } else {
+    return Promise.resolve(sqliteDb.prepare(sql).all(...params));
+  }
+}
 
-// Initialize DB schema
-sqliteDb.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    email TEXT UNIQUE NOT NULL,
-    password TEXT NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
+function dbGet(sql, params = []) {
+  return dbAll(sql, params).then(rows => rows[0] || null);
+}
 
-  CREATE TABLE IF NOT EXISTS queues (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    name TEXT NOT NULL,
-    prefix TEXT DEFAULT 'Q',
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
+function dbRun(sql, params = []) {
+  if (isPostgres) {
+    let i = 1;
+    let pgSql = sql.replace(/\?/g, () => `$${i++}`);
+    if (pgSql.trim().toUpperCase().startsWith('INSERT') && !pgSql.toUpperCase().includes('RETURNING')) {
+      pgSql += ' RETURNING id';
+    }
+    return pool.query(pgSql, params).then(res => ({
+      lastInsertRowid: res.rows[0] ? res.rows[0].id : 0,
+      changes: res.rowCount
+    }));
+  } else {
+    const stmt = sqliteDb.prepare(sql);
+    const info = stmt.run(...params);
+    return Promise.resolve({ lastInsertRowid: Number(info.lastInsertRowid), changes: info.changes });
+  }
+}
 
-  CREATE TABLE IF NOT EXISTS tokens (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    queue_id INTEGER NOT NULL,
-    token_number TEXT NOT NULL,
-    customer_name TEXT NOT NULL,
-    customer_phone TEXT,
-    status TEXT DEFAULT 'WAITING',
-    position INTEGER DEFAULT 0,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    served_at DATETIME,
-    completed_at DATETIME
-  );
+// Initialize Schema
+async function initSchema() {
+  if (isPostgres) {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY, name VARCHAR(255) NOT NULL, email VARCHAR(255) UNIQUE NOT NULL, password VARCHAR(255) NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE TABLE IF NOT EXISTS queues (
+        id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL, name VARCHAR(255) NOT NULL, prefix VARCHAR(10) DEFAULT 'Q', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE TABLE IF NOT EXISTS tokens (
+        id SERIAL PRIMARY KEY, queue_id INTEGER NOT NULL, token_number VARCHAR(50) NOT NULL, customer_name VARCHAR(255) NOT NULL, customer_phone VARCHAR(50), status VARCHAR(20) DEFAULT 'WAITING', position INTEGER DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, served_at TIMESTAMP, completed_at TIMESTAMP
+      );
+      CREATE TABLE IF NOT EXISTS analytics_logs (
+        id SERIAL PRIMARY KEY, queue_id INTEGER NOT NULL, token_id INTEGER NOT NULL, wait_seconds INTEGER DEFAULT 0, service_seconds INTEGER DEFAULT 0, status VARCHAR(20) NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+  } else {
+    sqliteDb.exec(`
+      CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, email TEXT UNIQUE NOT NULL, password TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP);
+      CREATE TABLE IF NOT EXISTS queues (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, name TEXT NOT NULL, prefix TEXT DEFAULT 'Q', created_at DATETIME DEFAULT CURRENT_TIMESTAMP);
+      CREATE TABLE IF NOT EXISTS tokens (id INTEGER PRIMARY KEY AUTOINCREMENT, queue_id INTEGER NOT NULL, token_number TEXT NOT NULL, customer_name TEXT NOT NULL, customer_phone TEXT, status TEXT DEFAULT 'WAITING', position INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, served_at DATETIME, completed_at DATETIME);
+      CREATE TABLE IF NOT EXISTS analytics_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, queue_id INTEGER NOT NULL, token_id INTEGER NOT NULL, wait_seconds INTEGER DEFAULT 0, service_seconds INTEGER DEFAULT 0, status TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP);
+    `);
+  }
+}
 
-  CREATE TABLE IF NOT EXISTS analytics_logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    queue_id INTEGER NOT NULL,
-    token_id INTEGER NOT NULL,
-    wait_seconds INTEGER DEFAULT 0,
-    service_seconds INTEGER DEFAULT 0,
-    status TEXT NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
-`);
+initSchema().catch(console.error);
 
 // Crypto Helpers
-const JWT_SECRET = 'queueflow_super_secret_jwt_key_2025';
+const JWT_SECRET = process.env.JWT_SECRET || 'queueflow_super_secret_jwt_key_2025';
 
 function hashPassword(password) {
   return crypto.pbkdf2Sync(password, 'queueflow_salt', 1000, 32, 'sha256').toString('hex');
@@ -775,9 +806,10 @@ const server = http.createServer(async (req, res) => {
   res.end(CLIENT_HTML);
 });
 
-const PORT = 5000;
+const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => {
   console.log(`\n======================================================`);
-  console.log(`⚡ QueueFlow 3.0 Ultra-Futuristic Server Live on http://localhost:${PORT}`);
+  console.log(`⚡ QueueFlow 3.0 Server Live on port ${PORT}`);
   console.log(`======================================================\n`);
 });
+
