@@ -105,4 +105,5 @@ async function query(text, params = []) {
   }
 }
 
-module.exports = { initDb, query, isPostgres };
+module.exports = { initDb, query, db: { query }, isPostgres };
+
