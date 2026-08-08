@@ -1,0 +1,25 @@
+{
+  "services": [
+    {
+      "type": "web",
+      "name": "queueflow-backend",
+      "env": "node",
+      "buildCommand": "npm install",
+      "startCommand": "npm start",
+      "envVars": [
+        {
+          "key": "PORT",
+          "value": "5000"
+        },
+        {
+          "key": "JWT_SECRET",
+          "value": "queueflow_super_secret_jwt_key_2025"
+        },
+        {
+          "key": "DATABASE_URL",
+          "value": "postgresql://queueflow_db_ww4u_user:MdLi1fsmzmIg4BuC8KXVIxMrmGIpKCI4@dpg-d9rh9m740ujc73bg0keg-a/queueflow_db_ww4u"
+        }
+      ]
+    }
+  ]
+}
