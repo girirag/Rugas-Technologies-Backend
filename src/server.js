@@ -58,7 +58,15 @@ app.post('/api/auth/login', async (req, res) => {
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password required' });
     }
-    const users = await db.query('SELECT * FROM users WHERE email = $1', [email]);
+    let users = await db.query('SELECT * FROM users WHERE email = $1', [email]);
+
+    // Auto-create default admin account on first login attempt if DB is empty
+    if (users.length === 0 && email === 'admin@queueflow.com' && password === 'admin123') {
+      const hashedPassword = await bcrypt.hash(password, 10);
+      await db.query('INSERT INTO users (name, email, password) VALUES ($1, $2, $3)', ['Admin Manager', email, hashedPassword]);
+      users = await db.query('SELECT * FROM users WHERE email = $1', [email]);
+    }
+
     if (users.length === 0) {
       return res.status(400).json({ error: 'Invalid credentials' });
     }
@@ -85,7 +93,7 @@ app.get('/api/auth/me', authenticateToken, (req, res) => {
 // --- QUEUE ROUTES ---
 app.get('/api/queues', async (req, res) => {
   try {
-    const queues = await db.query(`
+    let queues = await db.query(`
       SELECT q.*, 
         COUNT(CASE WHEN t.status = 'WAITING' THEN 1 END) as waiting_count,
         COUNT(CASE WHEN t.status = 'SERVING' THEN 1 END) as serving_count
@@ -94,6 +102,27 @@ app.get('/api/queues', async (req, res) => {
       GROUP BY q.id
       ORDER BY q.created_at DESC
     `);
+
+    // Auto-seed default queue if none exists
+    if (queues.length === 0) {
+      await db.query('INSERT INTO queues (user_id, name, prefix) VALUES ($1, $2, $3)', [1, 'Main Support Counter', 'A']);
+      const qRes = await db.query('SELECT id FROM queues ORDER BY id DESC LIMIT 1');
+      const qId = qRes[0].id;
+      await db.query("INSERT INTO tokens (queue_id, token_number, customer_name, status, position) VALUES ($1, 'A-001', 'John Doe', 'WAITING', 1)", [qId]);
+      await db.query("INSERT INTO tokens (queue_id, token_number, customer_name, status, position) VALUES ($1, 'A-002', 'Sarah Smith', 'WAITING', 2)", [qId]);
+      await db.query("INSERT INTO tokens (queue_id, token_number, customer_name, status, position) VALUES ($1, 'A-003', 'David Miller', 'WAITING', 3)", [qId]);
+
+      queues = await db.query(`
+        SELECT q.*, 
+          COUNT(CASE WHEN t.status = 'WAITING' THEN 1 END) as waiting_count,
+          COUNT(CASE WHEN t.status = 'SERVING' THEN 1 END) as serving_count
+        FROM queues q
+        LEFT JOIN tokens t ON q.id = t.queue_id
+        GROUP BY q.id
+        ORDER BY q.created_at DESC
+      `);
+    }
+
     res.json(queues);
   } catch (err) {
     console.error(err);
@@ -293,6 +322,29 @@ app.patch('/api/tokens/:id/cancel', authenticateToken, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to cancel token' });
+  }
+});
+
+// 5. Reset queue to default list & order
+app.post('/api/queues/:id/reset', async (req, res) => {
+  try {
+    const queueId = req.params.id;
+    await db.query('DELETE FROM tokens WHERE queue_id = $1', [queueId]);
+    await db.query('DELETE FROM analytics_logs WHERE queue_id = $1', [queueId]);
+
+    const queues = await db.query('SELECT * FROM queues WHERE id = $1', [queueId]);
+    const pfx = queues.length > 0 ? queues[0].prefix : 'A';
+
+    await db.query("INSERT INTO tokens (queue_id, token_number, customer_name, status, position) VALUES ($1, $2, 'John Doe', 'WAITING', 1)", [queueId, `${pfx}-001`]);
+    await db.query("INSERT INTO tokens (queue_id, token_number, customer_name, status, position) VALUES ($1, $2, 'Sarah Smith', 'WAITING', 2)", [queueId, `${pfx}-002`]);
+    await db.query("INSERT INTO tokens (queue_id, token_number, customer_name, status, position) VALUES ($1, $2, 'David Miller', 'WAITING', 3)", [queueId, `${pfx}-003`]);
+
+    const tokens = await db.query('SELECT * FROM tokens WHERE queue_id = $1 ORDER BY position ASC', [queueId]);
+    broadcastQueueUpdate(queueId, { type: 'QUEUE_RESET', queueId });
+    res.json({ message: 'Queue reset to default list and order successfully.', tokens });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to reset queue' });
   }
 });
 
