@@ -94,12 +94,12 @@ app.get('/api/auth/me', authenticateToken, (req, res) => {
 app.get('/api/queues', async (req, res) => {
   try {
     let queues = await db.query(`
-      SELECT q.*, 
+      SELECT q.id, q.user_id, q.name, q.prefix, q.created_at, 
         COUNT(CASE WHEN t.status = 'WAITING' THEN 1 END) as waiting_count,
         COUNT(CASE WHEN t.status = 'SERVING' THEN 1 END) as serving_count
       FROM queues q
       LEFT JOIN tokens t ON q.id = t.queue_id
-      GROUP BY q.id
+      GROUP BY q.id, q.user_id, q.name, q.prefix, q.created_at
       ORDER BY q.created_at DESC
     `);
 
@@ -113,12 +113,12 @@ app.get('/api/queues', async (req, res) => {
       await db.query("INSERT INTO tokens (queue_id, token_number, customer_name, status, position) VALUES ($1, 'A-003', 'David Miller', 'WAITING', 3)", [qId]);
 
       queues = await db.query(`
-        SELECT q.*, 
+        SELECT q.id, q.user_id, q.name, q.prefix, q.created_at, 
           COUNT(CASE WHEN t.status = 'WAITING' THEN 1 END) as waiting_count,
           COUNT(CASE WHEN t.status = 'SERVING' THEN 1 END) as serving_count
         FROM queues q
         LEFT JOIN tokens t ON q.id = t.queue_id
-        GROUP BY q.id
+        GROUP BY q.id, q.user_id, q.name, q.prefix, q.created_at
         ORDER BY q.created_at DESC
       `);
     }
