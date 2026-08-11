@@ -204,7 +204,7 @@ app.post('/api/queues/:id/tokens', async (req, res) => {
 });
 
 // 2. Move token UP or DOWN (Requirement 5)
-app.patch('/api/tokens/:id/move', authenticateToken, async (req, res) => {
+app.patch('/api/tokens/:id/move', async (req, res) => {
   try {
     const { direction } = req.body; // 'up' or 'down'
     if (!['up', 'down'].includes(direction)) {
@@ -247,7 +247,7 @@ app.patch('/api/tokens/:id/move', authenticateToken, async (req, res) => {
 });
 
 // 3. Assign top token for service (Requirement 6)
-app.post('/api/queues/:id/serve-next', authenticateToken, async (req, res) => {
+app.post('/api/queues/:id/serve-next', async (req, res) => {
   try {
     const queueId = req.params.id;
 
@@ -302,7 +302,7 @@ app.post('/api/queues/:id/serve-next', authenticateToken, async (req, res) => {
 });
 
 // 4. Cancel a token (Requirement 7)
-app.patch('/api/tokens/:id/cancel', authenticateToken, async (req, res) => {
+app.patch('/api/tokens/:id/cancel', async (req, res) => {
   try {
     const token = (await db.query('SELECT * FROM tokens WHERE id = $1', [req.params.id]))[0];
     if (!token) return res.status(404).json({ error: 'Token not found' });
